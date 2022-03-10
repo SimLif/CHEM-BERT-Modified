@@ -15,9 +15,11 @@ from sklearn.metrics import roc_auc_score
 from model import Smiles_BERT
 from torch.utils.data import Dataset, SubsetRandomSampler, DataLoader, SequentialSampler
 from data_utils import Vocab
-from model import Smiles_BERT, Masked_prediction, Smiles_BERT_BC, BERT_base, BERT_add_feature, BERT_base_dropout
+from model import Smiles_BERT, Masked_prediction, Smiles_BERT_BC, BERT_base, BERT_add_feature, BERT_base_dropout, DT1Model
 from rdkit.Chem.Scaffolds import MurckoScaffold
 from collections import defaultdict
+from transformers import BertTokenizer, AutoTokenizer
+
 
 def generate_scaffold(smiles, include_chirality=False):
 	scaffold = MurckoScaffold.MurckoScaffoldSmiles(smiles=smiles, includeChirality=include_chirality)
@@ -189,6 +191,8 @@ class FinetuningDataset(Dataset):
 		self.smiles_dataset = []
 		self.adj_dataset = []
 		self.mat_pos = mat_position
+
+		self.tokenizer_smi = AutoTokenizer.from_pretrained("seyonec/ChemBERTa-zinc-base-v1")
 		
 		self.seq_len = seq_len
 
@@ -293,8 +297,19 @@ class FinetuningDataset(Dataset):
 		else:
 			smiles_bert_adjmat = np.zeros((self.seq_len, self.seq_len), dtype=np.float32)
 
-		output = {"smiles_bert_input": smiles_bert_input, "smiles_bert_label": label,  \
-					"smiles_bert_adj_mask": smiles_bert_adj_mask, "smiles_bert_adjmat": smiles_bert_adjmat}
+		inputs = self.tokenizer_smi(item, padding='max_length', truncation=True,
+									max_length=128,
+									return_attention_mask=True, return_token_type_ids=True)
+
+		output = {
+            'input_ids': inputs['input_ids'],
+            'token_type_ids': inputs['token_type_ids'],
+            'attention_mask': inputs['attention_mask'],
+            'labels': label,
+        }
+
+		# output = {"smiles_bert_input": smiles_bert_input, "smiles_bert_label": label,  \
+		# 			"smiles_bert_adj_mask": smiles_bert_adj_mask, "smiles_bert_adjmat": smiles_bert_adjmat}
 
 		return {key:torch.tensor(value) for key, value in output.items()}
 
@@ -405,16 +420,18 @@ def main():
 	valid_dataloader = DataLoader(dataset, batch_size=arg.batch, sampler=valid_sampler, num_workers=arg.num_workers)
 	test_dataloader = DataLoader(dataset, batch_size=arg.batch, sampler=test_sampler, num_workers=arg.num_workers)
 
-	model = Smiles_BERT(len(Smiles_vocab), max_len=arg.seq, nhead=arg.nhead, feature_dim=arg.embed_size, feedforward_dim=arg.model_dim, nlayers=arg.layers, adj=arg.adjacency, dropout_rate=arg.drop_rate)
-	model.load_state_dict(torch.load(arg.saved_model), strict=False)
-	output_layer = nn.Linear(arg.embed_size, num_tasks)
+	# model = Smiles_BERT(len(Smiles_vocab), max_len=arg.seq, nhead=arg.nhead, feature_dim=arg.embed_size, feedforward_dim=arg.model_dim, nlayers=arg.layers, adj=arg.adjacency, dropout_rate=arg.drop_rate)
+
+	model = DT1Model(num_tasks)
+	# model.load_state_dict(torch.load(arg.saved_model), strict=False)
+	# output_layer = nn.Linear(arg.embed_size, num_tasks)
 	
-	model = BERT_base(model, output_layer)
+	# model = BERT_base(model, output_layer)
 	#model = BERT_base_dropout(model, output_layer)
 	
 	model.to(device)
-	if torch.cuda.device_count() > 1:
-		model = nn.DataParallel(model)
+	# if torch.cuda.device_count() > 1:
+	# 	model = nn.DataParallel(model)
 	#model.to(device)
 
 	optim = Adam(model.parameters(), lr=arg.lr, weight_decay=0)
@@ -435,16 +452,20 @@ def main():
 		model.train()
 		for i, data in data_iter:
 			data = {key:value.to(device) for key, value in data.items()}
-			position_num = torch.arange(arg.seq).repeat(data["smiles_bert_input"].size(0),1).to(device)
+			# position_num = torch.arange(arg.seq).repeat(data["smiles_bert_input"].size(0),1).to(device)
 			if arg.adjacency is True:
 				output = model.forward(data["smiles_bert_input"], position_num, adj_mask=data["smiles_bert_adj_mask"], adj_mat=data["smiles_bert_adjmat"])
 			else:
-				output = model.forward(data["smiles_bert_input"], position_num)
-			output = output[:,0]
-			data["smiles_bert_label"] = data["smiles_bert_label"].view(output.shape).to(torch.float64)
-			is_valid = data["smiles_bert_label"] ** 2 > 0
+				# output = model.forward(data["smiles_bert_input"], position_num)
+				output = model(**data)
+			# output = output[:,0]
+			# data["smiles_bert_label"] = data["smiles_bert_label"].view(output.shape).to(torch.float64)
+			# is_valid = data["smiles_bert_label"] ** 2 > 0
+			data["labels"] = data["labels"].view(output.shape).to(torch.float64)
+			is_valid = data["labels"] ** 2 > 0
 
-			loss = criterion(output.double(), (data["smiles_bert_label"]+1)/2)
+			loss = criterion(output.double(), (data["labels"] + 1) / 2)
+			# loss = criterion(output.double(), (data["smiles_bert_label"]+1)/2)
 			loss = torch.where(is_valid, loss, torch.zeros(loss.shape).to(loss.device).to(loss.dtype))
 			optim.zero_grad()
 			loss = torch.sum(loss) / torch.sum(is_valid)
@@ -468,22 +489,26 @@ def main():
 		with torch.no_grad():
 			for i, data in valid_iter:
 				data = {key:value.to(device) for key, value in data.items()}
-				position_num = torch.arange(arg.seq).repeat(data["smiles_bert_input"].size(0),1).to(device)
+				# position_num = torch.arange(arg.seq).repeat(data["smiles_bert_input"].size(0),1).to(device)
 				if arg.adjacency is True:
 					output = model.forward(data["smiles_bert_input"], position_num, adj_mask=data["smiles_bert_adj_mask"], adj_mat=data["smiles_bert_adjmat"])
 				else:
-					output = model.forward(data["smiles_bert_input"], position_num)
-				output = output[:,0]
-				data["smiles_bert_label"] = data["smiles_bert_label"].view(output.shape).to(torch.float64)
-				is_valid = data["smiles_bert_label"] ** 2 > 0
-				valid_loss = criterion(output.double(), (data["smiles_bert_label"]+1)/2)
+					# output = model.forward(data["smiles_bert_input"], position_num)
+					output = model(**data)
+				# output = output[:,0]
+				# data["smiles_bert_label"] = data["smiles_bert_label"].view(output.shape).to(torch.float64)
+				# is_valid = data["smiles_bert_label"] ** 2 > 0
+				# valid_loss = criterion(output.double(), (data["smiles_bert_label"]+1)/2)
+				data["labels"] = data["labels"].view(output.shape).to(torch.float64)
+				is_valid = data["labels"] ** 2 > 0
+				valid_loss = criterion(output.double(), (data["labels"] + 1) / 2)
 				valid_loss = torch.where(is_valid, valid_loss, torch.zeros(valid_loss.shape).to(valid_loss.device).to(valid_loss.dtype))
 				valid_loss = torch.sum(valid_loss) / torch.sum(is_valid)
 
 				valid_avg_loss += valid_loss.item()
 				predicted = torch.sigmoid(output)
 				predicted_list.append(predicted)
-				target_list.append(data["smiles_bert_label"])
+				target_list.append(data["labels"])
 				
 				#_, predicted = torch.max(output.data, 1)
 
@@ -525,16 +550,22 @@ def main():
 	with torch.no_grad():
 		for i, data in enumerate(test_dataloader):
 			data = {key:value.to(device) for key, value in data.items()}
-			position_num = torch.arange(arg.seq).repeat(data["smiles_bert_input"].size(0),1).to(device)
+			# position_num = torch.arange(arg.seq).repeat(data["smiles_bert_input"].size(0),1).to(device)
 			if arg.adjacency is True:
 				output = model(data["smiles_bert_input"], position_num, adj_mask=data["smiles_bert_adj_mask"], adj_mat=data["smiles_bert_adjmat"])
 			else:
-				output = model(data["smiles_bert_input"], position_num)
-			output = output[:,0]
-			data["smiles_bert_label"] = data["smiles_bert_label"].view(output.shape).to(torch.float64)
+				# output = model(data["smiles_bert_input"], position_num)
+				output = model(**data)
+			# output = output[:,0]
+			# data["smiles_bert_label"] = data["smiles_bert_label"].view(output.shape).to(torch.float64)
+			# predicted = torch.sigmoid(output)
+			# predicted_list.append(predicted)
+			# target_list.append(data["smiles_bert_label"])
+			data["labels"] = data["labels"].view(output.shape).to(torch.float64)
 			predicted = torch.sigmoid(output)
 			predicted_list.append(predicted)
-			target_list.append(data["smiles_bert_label"])
+			target_list.append(data["labels"])
+
 			
 			#_, predicted = torch.max(output.data, 1)
 
@@ -563,16 +594,21 @@ def main():
 	with torch.no_grad():
 		for i, data in enumerate(test_dataloader):
 			data = {key:value.to(device) for key, value in data.items()}
-			position_num = torch.arange(arg.seq).repeat(data["smiles_bert_input"].size(0),1).to(device)
+			# position_num = torch.arange(arg.seq).repeat(data["smiles_bert_input"].size(0),1).to(device)
 			if arg.adjacency is True:
 				output = model(data["smiles_bert_input"], position_num, adj_mask=data["smiles_bert_adj_mask"], adj_mat=data["smiles_bert_adjmat"])
 			else:
-				output = model(data["smiles_bert_input"], position_num)
-			output = output[:,0]
-			data["smiles_bert_label"] = data["smiles_bert_label"].view(output.shape).to(torch.float64)
+				# output = model(data["smiles_bert_input"], position_num)
+				output = model(**data)
+			# output = output[:,0]
+			# data["smiles_bert_label"] = data["smiles_bert_label"].view(output.shape).to(torch.float64)
+			# predicted = torch.sigmoid(output)
+			# predicted_list.append(predicted)
+			# target_list.append(data["smiles_bert_label"])
+			data["labels"] = data["labels"].view(output.shape).to(torch.float64)
 			predicted = torch.sigmoid(output)
 			predicted_list.append(predicted)
-			target_list.append(data["smiles_bert_label"])
+			target_list.append(data["labels"])
 			#_, predicted = torch.max(output.data, 1)
 
 			#total += data["smiles_bert_label"].size(0)

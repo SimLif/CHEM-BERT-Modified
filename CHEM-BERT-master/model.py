@@ -89,3 +89,73 @@ class Smiles_BERT(nn.Module):
 		x = x.transpose(1,0)
 		#x = self.linear(x)
 		return x
+
+
+import os
+import sys
+
+import torch
+import torch.nn as nn
+from transformers import BertModel, AutoModel
+from loguru import logger
+
+
+base_dir = os.path.dirname(os.path.dirname(__file__))
+sys.path.append(base_dir)
+
+
+class BaseModel(nn.Module):
+	def __init__(self):
+		super(BaseModel, self).__init__()
+		self.mode = 'train'
+		self.bert = AutoModel.from_pretrained("seyonec/ChemBERTa-zinc-base-v1")
+
+		self.bert_config = self.bert.config
+
+
+	@staticmethod
+	def _init_weights(blocks, **kwargs):
+		for block in blocks:
+			for module in block.modules():
+				if isinstance(module, nn.Linear):
+					nn.init.zeros_(module.bias)
+				elif isinstance(module, nn.Embedding):
+					nn.init.normal_(module.weight, mean=0, std=kwargs.pop('initializer_range', 0.02))
+				elif isinstance(module, nn.LayerNorm):
+					nn.init.zeros_(module.bias)
+					nn.init.ones_(module.weight)
+
+
+class DT1Model(BaseModel):
+    def __init__(self,
+                 task_num):
+
+        super(DT1Model, self).__init__()
+
+        # 扩充词表故需要重定义
+        self.bert.pooler = None
+        # self.bert.resize_token_embeddings(_config.len_of_tokenizer)
+        out_dims = self.bert_config.hidden_size
+
+
+        self.classifier = nn.Linear(out_dims, task_num)
+
+        # 模型初始化
+        init_blocks = [self.classifier]
+        self._init_weights(init_blocks, initializer_range=self.bert_config.initializer_range)
+
+    def forward(self,
+                input_ids,
+                attention_mask,
+                token_type_ids,
+                labels):
+        out = self.bert(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids
+        )
+
+        out = out.last_hidden_state[:, 0, :]  # 取cls对应的embedding
+        out = self.classifier(out)
+
+        return out
