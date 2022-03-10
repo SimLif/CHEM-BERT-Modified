@@ -1,0 +1,10 @@
+/finetuned_model
+/CHEM-BERT-master/DT_dataset
+/CHEM-BERT-master/model
+/CHEM-BERT-master/output
+/.ipynb_checkpoints
+/.vscode
+*.pyc
+/.idea
+*.zip
+.DS_Store
