@@ -334,16 +334,16 @@ class FinetuningDataset(Dataset):
 
 
 	def replace_halogen(self,string):
-	    """Regex to replace Br and Cl with single letters"""
-	    br = re.compile('Br')
-	    cl = re.compile('Cl')
-	    sn = re.compile('Sn')
-	    na = re.compile('Na')
-	    string = br.sub('R', string)
-	    string = cl.sub('L', string)
-	    string = sn.sub('X', string)
-	    string = na.sub('A', string)
-	    return string
+		"""Regex to replace Br and Cl with single letters"""
+		br = re.compile('Br')
+		cl = re.compile('Cl')
+		sn = re.compile('Sn')
+		na = re.compile('Na')
+		string = br.sub('R', string)
+		string = cl.sub('L', string)
+		string = sn.sub('X', string)
+		string = na.sub('A', string)
+		return string
 
 	def zero_padding(self, array, shape):
 		if array.shape[0] > shape[0]:
@@ -532,7 +532,8 @@ def main():
 		print("VALID-AUCROC: ", sum(roc_list)/len(roc_list))
 
 		if valid_avg_loss < min_valid_loss:
-			save_path = "../finetuned_model/" + str(arg.dataset) + "_epoch_" + str(epoch) + "_val_loss_" + str(round(valid_avg_loss/len(valid_dataloader),5))
+			save_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "finetuned_model/" + str(arg.dataset) + "_epoch_" + str(epoch) + "_val_loss_" + str(round(valid_avg_loss/len(valid_dataloader),5)))
+			# save_path = "../finetuned_model/" + str(arg.dataset) + "_epoch_" + str(epoch) + "_val_loss_" + str(round(valid_avg_loss/len(valid_dataloader),5))
 			torch.save(model.state_dict(), save_path+'.pt')
 			model.to(device)
 			min_valid_loss = valid_avg_loss
