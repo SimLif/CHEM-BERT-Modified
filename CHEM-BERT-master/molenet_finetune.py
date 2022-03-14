@@ -358,7 +358,7 @@ def main():
 	parser.add_argument('--dataset', help="name of dataset", type=str)
 	#parser.add_argument('--data_indice', help="indices of dataset", type=str)
 	parser.add_argument('--adjacency', help="use adjacency matrix", type=bool, default=False)
-	parser.add_argument('--batch', help="batch size", type=int, default=8)
+	parser.add_argument('--batch', help="batch size", type=int, default=64)
 	parser.add_argument('--epoch', help="epoch", type=int, default=2)
 	parser.add_argument('--seq', help="sequence length", type=int, default=256)
 	parser.add_argument('--lr', help="learning rate", type=float, default=0.0001)
@@ -378,6 +378,8 @@ def main():
 	_init_seed_fix(arg.seed)
 	device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 	print("device:", device)
+
+	print(f'********************** {arg.dataset} **********************')
 
 	if arg.dataset == "tox21":
 		num_tasks = 12
@@ -444,6 +446,7 @@ def main():
 	# load model
 	print("Start fine-tuning with seed", arg.seed)
 	min_valid_loss = 100000
+	max_valid_roc = 0
 	counter = 0
 
 	for epoch in range(arg.epoch):
@@ -477,6 +480,9 @@ def main():
 			loss.backward()
 			#torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
 			optim.step()
+
+			if (epoch == 0) and (i == 0):
+				print(os.system("nvidia-smi"))
 
 			avg_loss += loss.item()
 			status = {"epoch":epoch+1, "iter":i, "avg_loss":avg_loss / (i+1), "loss":loss.item()}
@@ -530,6 +536,7 @@ def main():
 				roc_list.append(roc_auc_score((target_list[is_valid,i]+1)/2, predicted_list[is_valid,i]))
 		
 		print("VALID-AUCROC: ", sum(roc_list)/len(roc_list))
+		valid_roc = sum(roc_list)/len(roc_list)
 
 		if valid_avg_loss < min_valid_loss:
 			save_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "finetuned_model/" + str(arg.dataset) + "_epoch_" + str(epoch) + "_val_loss_" + str(round(valid_avg_loss/len(valid_dataloader),5)))
