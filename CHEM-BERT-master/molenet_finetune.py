@@ -1,4 +1,5 @@
-import numpy as np 
+import os
+import numpy as np
 import torch
 import glob
 import pandas as pd
@@ -14,12 +15,13 @@ from rdkit import Chem
 from sklearn.metrics import roc_auc_score
 from model import Smiles_BERT
 from torch.utils.data import Dataset, SubsetRandomSampler, DataLoader, SequentialSampler
-from data_utils import Vocab
+from data_utils import Vocab, SMILES_SPE_Tokenizer
 from model import Smiles_BERT, Masked_prediction, Smiles_BERT_BC, BERT_base, BERT_add_feature, BERT_base_dropout, DT1Model
 from rdkit.Chem.Scaffolds import MurckoScaffold
 from collections import defaultdict
 from transformers import BertTokenizer, AutoTokenizer
 
+base_dir = os.path.dirname(__file__)
 
 def generate_scaffold(smiles, include_chirality=False):
 	scaffold = MurckoScaffold.MurckoScaffoldSmiles(smiles=smiles, includeChirality=include_chirality)
@@ -192,7 +194,10 @@ class FinetuningDataset(Dataset):
 		self.adj_dataset = []
 		self.mat_pos = mat_position
 
-		self.tokenizer_smi = AutoTokenizer.from_pretrained("seyonec/ChemBERTa-zinc-base-v1")
+		# self.tokenizer_smi = AutoTokenizer.from_pretrained("seyonec/ChemBERTa-zinc-base-v1")
+		self.tokenizer_smi = SMILES_SPE_Tokenizer(
+			vocab_file=os.path.join(base_dir, 'model/spe_voc.txt'),
+			spe_file=os.path.join(base_dir, 'model/SPE_ChEMBL.txt'))
 		
 		self.seq_len = seq_len
 
@@ -423,7 +428,7 @@ def main():
 	# model = Smiles_BERT(len(Smiles_vocab), max_len=arg.seq, nhead=arg.nhead, feature_dim=arg.embed_size, feedforward_dim=arg.model_dim, nlayers=arg.layers, adj=arg.adjacency, dropout_rate=arg.drop_rate)
 
 	model = DT1Model(num_tasks)
-	# model.load_state_dict(torch.load(arg.saved_model), strict=False)
+	model.load_state_dict(torch.load(arg.saved_model), strict=False)
 	# output_layer = nn.Linear(arg.embed_size, num_tasks)
 	
 	# model = BERT_base(model, output_layer)
@@ -474,11 +479,11 @@ def main():
 			optim.step()
 
 			avg_loss += loss.item()
-			status = {"epoch":epoch, "iter":i, "avg_loss":avg_loss / (i+1), "loss":loss.item()}
-			if i % 100 == 0:
-				print(i)
+			status = {"epoch":epoch+1, "iter":i, "avg_loss":avg_loss / (i+1), "loss":loss.item()}
+			# if i % 100 == 0:
+			# 	print(i)
 				#data_iter.write(str(status))
-		print("Epoch: ", epoch, "average loss: ", avg_loss/len(data_iter))
+		print("Epoch: ", epoch+1, "average loss: ", avg_loss/len(data_iter))
 
 		model.eval()
 		valid_iter = tqdm.tqdm(enumerate(valid_dataloader), total=len(valid_dataloader))
@@ -524,7 +529,7 @@ def main():
 				is_valid = target_list[:,i] ** 2 > 0
 				roc_list.append(roc_auc_score((target_list[is_valid,i]+1)/2, predicted_list[is_valid,i]))
 		
-		print("AUCROC: ", sum(roc_list)/len(roc_list))
+		print("VALID-AUCROC: ", sum(roc_list)/len(roc_list))
 
 		if valid_avg_loss < min_valid_loss:
 			save_path = "../finetuned_model/" + str(arg.dataset) + "_epoch_" + str(epoch) + "_val_loss_" + str(round(valid_avg_loss/len(valid_dataloader),5))
@@ -581,7 +586,7 @@ def main():
 				is_valid = target_list[:,i] ** 2 > 0
 				roc_list.append(roc_auc_score((target_list[is_valid,i]+1)/2, predicted_list[is_valid,i]))
 		
-		print("AUCROC: ", sum(roc_list)/len(roc_list))
+		print("TEST-AUCROC: ", sum(roc_list)/len(roc_list))
 	print("Evaluate on min valid loss model")
 	correct = 0
 	total = 0
@@ -624,7 +629,7 @@ def main():
 				is_valid = target_list[:,i] ** 2 > 0
 				roc_list.append(roc_auc_score((target_list[is_valid,i]+1)/2, predicted_list[is_valid,i]))
 		
-		print("AUCROC: ", sum(roc_list)/len(roc_list))
+		print("TEST-AUCROC: ", sum(roc_list)/len(roc_list))
 
 if __name__ == "__main__":
 	main()

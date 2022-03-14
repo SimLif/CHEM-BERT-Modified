@@ -108,8 +108,8 @@ class BaseModel(nn.Module):
 	def __init__(self):
 		super(BaseModel, self).__init__()
 		self.mode = 'train'
-		self.bert = AutoModel.from_pretrained("seyonec/ChemBERTa-zinc-base-v1")
-
+		# self.bert = AutoModel.from_pretrained("seyonec/ChemBERTa-zinc-base-v1")
+		self.bert = AutoModel.from_pretrained(os.path.join(base_dir, 'CHEM-BERT-master/model/PubMedBERT_abstract'))
 		self.bert_config = self.bert.config
 
 
@@ -134,7 +134,7 @@ class DT1Model(BaseModel):
 
         # 扩充词表故需要重定义
         self.bert.pooler = None
-        # self.bert.resize_token_embeddings(_config.len_of_tokenizer)
+        self.bert.resize_token_embeddings(28895 + 3117 + 1)
         out_dims = self.bert_config.hidden_size
 
 
