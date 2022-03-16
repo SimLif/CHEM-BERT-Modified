@@ -1,4 +1,5 @@
 import os
+import shutil
 import numpy as np
 import torch
 import glob
@@ -22,6 +23,20 @@ from collections import defaultdict
 from transformers import BertTokenizer, AutoTokenizer
 
 base_dir = os.path.dirname(__file__)
+
+def del_file(filepath):
+    """
+    删除某一目录下的所有文件或文件夹
+    :param filepath: 路径
+    :return:
+    """
+    del_list = os.listdir(filepath)
+    for f in del_list:
+        file_path = os.path.join(filepath, f)
+        if os.path.isfile(file_path):
+            os.remove(file_path)
+        elif os.path.isdir(file_path):
+            shutil.rmtree(file_path)
 
 def generate_scaffold(smiles, include_chirality=False):
 	scaffold = MurckoScaffold.MurckoScaffoldSmiles(smiles=smiles, includeChirality=include_chirality)
@@ -358,10 +373,10 @@ def main():
 	parser.add_argument('--dataset', help="name of dataset", type=str)
 	#parser.add_argument('--data_indice', help="indices of dataset", type=str)
 	parser.add_argument('--adjacency', help="use adjacency matrix", type=bool, default=False)
-	parser.add_argument('--batch', help="batch size", type=int, default=64)
+	parser.add_argument('--batch', help="batch size", type=int, default=128)
 	parser.add_argument('--epoch', help="epoch", type=int, default=2)
 	parser.add_argument('--seq', help="sequence length", type=int, default=256)
-	parser.add_argument('--lr', help="learning rate", type=float, default=0.0001)
+	parser.add_argument('--lr', help="learning rate", type=float, default=0.00002)
 	parser.add_argument('--embed_size', help="embedding vector size", type=int, default=1024)
 	parser.add_argument('--model_dim', help="dim of transformer", type=int, default=1024)
 	parser.add_argument('--layers', help="number of layers", type=int, default=6)
@@ -380,6 +395,8 @@ def main():
 	print("device:", device)
 
 	print(f'********************** {arg.dataset} **********************')
+	model_name = arg.saved_model.split('/')[-1]
+	print(f'********************** {model_name} **********************')
 
 	if arg.dataset == "tox21":
 		num_tasks = 12
@@ -442,12 +459,15 @@ def main():
 	#model.to(device)
 
 	optim = Adam(model.parameters(), lr=arg.lr, weight_decay=0)
+	# model, optim = amp.initialize(model, optim, opt_level='O1')
 	criterion = nn.BCEWithLogitsLoss(reduction='none')
 	# load model
 	print("Start fine-tuning with seed", arg.seed)
 	min_valid_loss = 100000
-	max_valid_roc = 0
+	max_valid_aucroc = 0
 	counter = 0
+	save_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "finetuned_model/")
+	del_file(save_path)
 
 	for epoch in range(arg.epoch):
 		avg_loss = 0
@@ -536,7 +556,7 @@ def main():
 				roc_list.append(roc_auc_score((target_list[is_valid,i]+1)/2, predicted_list[is_valid,i]))
 		
 		print("VALID-AUCROC: ", sum(roc_list)/len(roc_list))
-		valid_roc = sum(roc_list)/len(roc_list)
+		valid_aucroc = sum(roc_list)/len(roc_list)
 
 		if valid_avg_loss < min_valid_loss:
 			save_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "finetuned_model/" + str(arg.dataset) + "_epoch_" + str(epoch) + "_val_loss_" + str(round(valid_avg_loss/len(valid_dataloader),5)))
@@ -545,6 +565,12 @@ def main():
 			model.to(device)
 			min_valid_loss = valid_avg_loss
 			counter = 0
+		
+		if valid_aucroc > max_valid_aucroc:
+			save_path_roc = os.path.join(os.path.dirname(os.path.dirname(__file__)), "finetuned_model/" + str(arg.dataset) + "_epoch_" + str(epoch) + "_aucroc_" + str(round(valid_aucroc,5)))
+			torch.save(model.state_dict(), save_path_roc+'.pt')
+			model.to(device)
+			max_valid_aucroc = valid_aucroc
 
 		counter += 1
 		if counter > 5:
@@ -595,12 +621,57 @@ def main():
 				roc_list.append(roc_auc_score((target_list[is_valid,i]+1)/2, predicted_list[is_valid,i]))
 		
 		print("TEST-AUCROC: ", sum(roc_list)/len(roc_list))
+	
 	print("Evaluate on min valid loss model")
 	correct = 0
 	total = 0
 	predicted_list = []
 	target_list = []
 	model.load_state_dict(torch.load(save_path+'.pt'))
+	model.eval()
+	#test_iter = tqdm.tqdm(enumerate(test_dataloader), total=len(test_dataloader))
+	#position_num = torch.arange(arg.seq).repeat(arg.batch,1).to(device)
+	with torch.no_grad():
+		for i, data in enumerate(test_dataloader):
+			data = {key:value.to(device) for key, value in data.items()}
+			# position_num = torch.arange(arg.seq).repeat(data["smiles_bert_input"].size(0),1).to(device)
+			if arg.adjacency is True:
+				output = model(data["smiles_bert_input"], position_num, adj_mask=data["smiles_bert_adj_mask"], adj_mat=data["smiles_bert_adjmat"])
+			else:
+				# output = model(data["smiles_bert_input"], position_num)
+				output = model(**data)
+			# output = output[:,0]
+			# data["smiles_bert_label"] = data["smiles_bert_label"].view(output.shape).to(torch.float64)
+			# predicted = torch.sigmoid(output)
+			# predicted_list.append(predicted)
+			# target_list.append(data["smiles_bert_label"])
+			data["labels"] = data["labels"].view(output.shape).to(torch.float64)
+			predicted = torch.sigmoid(output)
+			predicted_list.append(predicted)
+			target_list.append(data["labels"])
+			#_, predicted = torch.max(output.data, 1)
+
+			#total += data["smiles_bert_label"].size(0)
+			#correct += (torch.round(predicted) == data["smiles_bert_label"]).sum().item()
+
+		#predicted_list = np.reshape(predicted_list, -1)
+		#target_list = np.reshape(target_list, -1)
+		predicted_list = torch.cat(predicted_list, dim=0).cpu().numpy()
+		target_list = torch.cat(target_list, dim=0).cpu().numpy()
+		roc_list = []
+		for i in range(target_list.shape[1]):
+			if np.sum(target_list[:,i] == 1) > 0 and np.sum(target_list[:,i] == -1) > 0:
+				is_valid = target_list[:,i] ** 2 > 0
+				roc_list.append(roc_auc_score((target_list[is_valid,i]+1)/2, predicted_list[is_valid,i]))
+		
+		print("TEST-AUCROC: ", sum(roc_list)/len(roc_list))
+
+	print("Evaluate on max valid aucroc model")
+	correct = 0
+	total = 0
+	predicted_list = []
+	target_list = []
+	model.load_state_dict(torch.load(save_path_roc+'.pt'))
 	model.eval()
 	#test_iter = tqdm.tqdm(enumerate(test_dataloader), total=len(test_dataloader))
 	#position_num = torch.arange(arg.seq).repeat(arg.batch,1).to(device)
