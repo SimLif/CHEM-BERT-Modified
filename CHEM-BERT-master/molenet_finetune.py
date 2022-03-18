@@ -454,8 +454,8 @@ def main():
 	#model = BERT_base_dropout(model, output_layer)
 	
 	model.to(device)
-	# if torch.cuda.device_count() > 1:
-	# 	model = nn.DataParallel(model)
+	if torch.cuda.device_count() > 1:
+		model = nn.DataParallel(model)
 	#model.to(device)
 
 	optim = Adam(model.parameters(), lr=arg.lr, weight_decay=0)
